@@ -297,9 +297,11 @@ async def make_api_request(
     async def make_request() -> httpx.Response:
         headers = {}
 
-        # Add CSRF token for non-GET requests
-        if method.lower() != "get" and superset_ctx.csrf_token:
-            headers["X-CSRFToken"] = superset_ctx.csrf_token
+        # Add CSRF token and Referer for non-GET requests
+        if method.lower() != "get":
+            if superset_ctx.csrf_token:
+                headers["X-CSRFToken"] = superset_ctx.csrf_token
+            headers["Referer"] = superset_ctx.base_url
 
         if method.lower() == "get":
             return await client.get(endpoint, params=params)
@@ -1151,6 +1153,49 @@ async def superset_dataset_create(
     payload = {
         "table_name": table_name,
         "database": database_id,
+    }
+
+    if schema:
+        payload["schema"] = schema
+
+    if owners:
+        payload["owners"] = owners
+
+    return await make_api_request(ctx, "post", "/api/v1/dataset/", data=payload)
+
+
+@mcp.tool()
+@requires_auth
+@handle_api_errors
+async def superset_dataset_create_virtual(
+    ctx: Context,
+    table_name: str,
+    database_id: int,
+    sql: str,
+    schema: str = None,
+    owners: List[int] = None,
+) -> Dict[str, Any]:
+    """
+    Create a new Virtual Dataset in Superset from a SQL query
+
+    Makes a request to the /api/v1/dataset/ POST endpoint to create a new virtual dataset
+    based on a custom SQL query. Virtual datasets allow you to create datasets from
+    complex queries with JOINs, aggregations, and transformations.
+
+    Args:
+        table_name: Name for the virtual dataset (will be displayed in Superset)
+        database_id: ID of the database to run the SQL query against
+        sql: SQL query that defines the virtual dataset
+        schema: Optional database schema name (for organization purposes)
+        owners: Optional list of user IDs who should own this dataset
+
+    Returns:
+        A dictionary with the created dataset information including its ID
+    """
+    payload = {
+        "table_name": table_name,
+        "database": database_id,
+        "sql": sql,
     }
 
     if schema:
