@@ -53,6 +53,16 @@ npx -y @smithery/cli install @aptro/superset-mcp --client claude
    ```bash
    mcp install main.py
    ```
+   
+   or with Ubuntu:
+   ```bash
+   claude mcp add superset-mcp -- uv run --directory {THIS_REPOSITORY_FOLDER} python main.py
+   ```
+   or the lite version:
+
+   ```bash
+   claude mcp add superset-mcp-lite -- uv run --directory {THIS_REPOSITORY_FOLDER} python main_lite.py
+   ```
 
 ## Usage with Claude
 
