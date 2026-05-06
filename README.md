@@ -5,6 +5,9 @@ MCP server for interacting with Apache Superset, enabling AI agents to connect t
 
 ## Setup Instructions
 
+> **You do NOT need to install Superset locally.** This MCP connects to any Superset instance reachable over HTTP — production, staging, or local.
+> Only follow **Appendix A** (run Superset locally) if you actually want a test instance on your machine.
+
 ### Installing via Smithery
 
 To install Superset Integration for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@aptro/superset-mcp):
@@ -13,56 +16,108 @@ To install Superset Integration for Claude Desktop automatically via [Smithery](
 npx -y @smithery/cli install @aptro/superset-mcp --client claude
 ```
 
-### Manual Installation
+### Manual Installation (remote Superset)
 
-1. **Set Up Superset Locally**
+#### Prerequisites
+- Python 3.10+ (3.13 recommended)
+- [`uv`](https://docs.astral.sh/uv/getting-started/installation/)
+- Network access to the target Superset URL
 
-   Run this script to start Superset locally:
-   ```bash
-   git clone --branch 4.1.1 --depth 1 https://github.com/apache/superset && \
-   cd superset && \
-   docker compose -f docker-compose-image-tag.yml up
-   ```
+#### 1. Clone this repository
 
-   Once Superset is running, you should be able to access it at http://localhost:8088 with default credentials:
-   - Username: admin
-   - Password: admin
+```bash
+git clone <repo-url> superset-mcp
+cd superset-mcp
+```
 
-2. **Clone This Repository**
+#### 2. Create a venv and install dependencies
 
-   Clone this repository to your local machine.
+```bash
+uv venv --python 3.13
+uv pip install -e .
+```
 
-3. **Configure Environment Variables**
+#### 3. (Optional) Install Chromium for SSO/Azure login
 
-   Create a `.env` file in the root directory with your Superset credentials:
-   ```
-   SUPERSET_BASE_URL=http://localhost:8088  # Change to your Superset URL
-   SUPERSET_USERNAME=your_username
-   SUPERSET_PASSWORD=your_password
-   ```
+Only required if your Superset instance uses SSO (Azure/OAuth) and you intend to use `superset_auth_capture_session` (browser login).
+Skip this step if you authenticate with username/password (`provider=db`).
 
-4. **Install Dependencies**
+```bash
+.venv/bin/playwright install chromium
+```
 
-   ```bash
-   uv pip install .
-   ```
+> ⚠️ Use `playwright install chromium` (without `--with-deps` on macOS — that flag may pull only `headless-shell`, which has no visible window). On Linux, `--with-deps` may be needed to install system libraries.
 
-5. **Install MCP Config for Claude**
+#### 4. Configure `.env`
 
-   To use with Claude Desktop app:
-   ```bash
-   mcp install main.py
-   ```
-   
-   or with Ubuntu:
-   ```bash
-   claude mcp add superset-mcp -- uv run --directory {THIS_REPOSITORY_FOLDER} python main.py
-   ```
-   or the lite version:
+```bash
+cat > .env <<'EOF'
+SUPERSET_BASE_URL=https://superset.your-company.com   # remote Superset URL
 
-   ```bash
-   claude mcp add superset-mcp-lite -- uv run --directory {THIS_REPOSITORY_FOLDER} python main_lite.py
-   ```
+# Only for username/password login (provider=db). Leave blank if using SSO:
+# SUPERSET_USERNAME=your.user
+# SUPERSET_PASSWORD=your.password
+EOF
+```
+
+#### 5. Register the MCP with Claude
+
+Claude Desktop:
+```bash
+mcp install main.py
+```
+
+Claude Code (Linux/macOS):
+```bash
+claude mcp add superset-mcp -- uv run --directory {THIS_REPOSITORY_FOLDER} python main.py
+```
+
+Lite version (fewer tools, faster startup):
+```bash
+claude mcp add superset-mcp-lite -- uv run --directory {THIS_REPOSITORY_FOLDER} python main_lite.py
+```
+
+##### Manual config (`~/.claude.json`)
+
+If you prefer editing the config file directly instead of using `claude mcp add`, add the block below under `"mcpServers"`:
+
+```json
+{
+  "mcpServers": {
+    "superset-mcp": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/absolute/path/to/superset-mcp",
+        "run",
+        "python",
+        "main.py"
+      ],
+      "env": {
+        "SUPERSET_BASE_URL": "https://superset.your-company.com"
+      }
+    }
+  }
+}
+```
+
+> ⚠️ Claude Code launches MCP servers with a minimal `PATH`. If startup fails with `uv: command not found`, replace `"command": "uv"` with the absolute path returned by `which uv` (e.g. `/opt/homebrew/bin/uv` or `~/.local/bin/uv`).
+
+Sync dependencies once so `uv run` does not have to install on first launch:
+
+```bash
+cd /absolute/path/to/superset-mcp
+uv sync
+uv run playwright install chromium   # only if using SSO
+```
+
+Then reload the MCP in Claude Code (`/mcp` → reconnect, or restart the session).
+
+#### 6. First login
+
+- **SSO (Azure/OAuth)**: call `superset_auth_capture_session` in Claude — Chromium opens for login. Once you reach `/superset/welcome/`, cookies are saved to `.superset_session.json` and the MCP hot-reloads them.
+- **Username/password (`provider=db`)**: call `superset_auth_authenticate_user` (uses `SUPERSET_USERNAME` / `SUPERSET_PASSWORD` from `.env`).
 
 ## Usage with Claude
 
@@ -216,18 +271,32 @@ This plugin offers the following MCP tools that Claude can use:
 
 ## Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| SUPERSET_BASE_URL | URL of your Superset instance | http://localhost:8088 |
-| SUPERSET_USERNAME | Username for Superset | None |
-| SUPERSET_PASSWORD | Password for Superset | None |
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| SUPERSET_BASE_URL | Superset instance URL (remote or local) | http://localhost:8088 | yes |
+| SUPERSET_USERNAME | Username (only for `provider=db`; do not use with SSO) | — | no |
+| SUPERSET_PASSWORD | Password (only for `provider=db`; do not use with SSO) | — | no |
 
 ## Troubleshooting
 
-- If you encounter authentication issues, verify your credentials in the `.env` file
-- Make sure Superset is running and accessible at the URL specified in your `.env` file
-- Check that you're using a compatible version of Superset (tested with version 4.1.1)
-- Ensure the port used by the MCP server is not being used by another application
+- **SSO timeout (`Timeout aguardando redirecionamento pós-login`)**: login did not reach `/superset/welcome/` within 5 min. Check for pending MFA, or confirm `SUPERSET_BASE_URL` matches the domain where SSO redirects.
+- **Chromium does not open**: make sure you ran `.venv/bin/playwright install chromium` (without `--with-deps` on macOS) and that `~/Library/Caches/ms-playwright/chromium-*` exists (full build, not just `chromium_headless_shell-*`).
+- **`Not authenticated`**: call `superset_auth_capture_session` (SSO) or `superset_auth_authenticate_user` (username/password).
+- **MCP launches `capture_session.py` but it turns into a zombie process**: the Python running the MCP does not have playwright installed. The MCP automatically prefers `<repo>/.venv/bin/python` — ensure the venv exists and `playwright` is installed there.
+- **`Multiple top-level modules` when running `uv pip install`**: already fixed via `[tool.setuptools] py-modules = [...]` in `pyproject.toml`.
+
+## Appendix A — Run Superset locally (optional)
+
+Use this **only** if you want a local Superset test instance. Skip this section if you are connecting to a remote Superset.
+
+```bash
+git clone --branch 4.1.1 --depth 1 https://github.com/apache/superset && \
+cd superset && \
+docker compose -f docker-compose-image-tag.yml up
+```
+
+Open http://localhost:8088 — default credentials: `admin` / `admin`.
+Then point the MCP's `.env` to `SUPERSET_BASE_URL=http://localhost:8088`.
 
 ## Security Notes
 
