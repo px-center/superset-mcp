@@ -60,6 +60,7 @@ SUPERSET_BASE_URL = os.getenv("SUPERSET_BASE_URL", "http://localhost:8088")
 SUPERSET_USERNAME = os.getenv("SUPERSET_USERNAME")
 SUPERSET_PASSWORD = os.getenv("SUPERSET_PASSWORD")
 ACCESS_TOKEN_STORE_PATH = os.path.join(os.path.dirname(__file__), ".superset_token")
+SESSION_STATE_PATH = os.path.join(os.path.dirname(__file__), ".superset_session.json")
 
 # Initialize FastAPI app for handling additional web endpoints if needed
 app = FastAPI(title="Superset MCP Server")
@@ -74,6 +75,7 @@ class SupersetContext:
     access_token: Optional[str] = None
     csrf_token: Optional[str] = None
     app: FastAPI = None
+    session_mtime: float = 0.0
 
 
 def load_stored_token() -> Optional[str]:
@@ -96,6 +98,35 @@ def save_access_token(token: str):
         logger.warning(f"Warning: Could not save access token: {e}")
 
 
+def load_session_cookies() -> Optional[Dict[str, str]]:
+    """Load cookies from Playwright storage_state file (.superset_session.json).
+
+    Returns a dict {name: value} suitable for httpx, or None if file is absent
+    or unreadable. Filters cookies whose domain matches the configured base URL.
+    """
+    if not os.path.exists(SESSION_STATE_PATH):
+        return None
+    try:
+        with open(SESSION_STATE_PATH, "r") as f:
+            state = json.load(f)
+    except Exception as e:
+        logger.warning(f"Could not read session state: {e}")
+        return None
+
+    from urllib.parse import urlparse
+    host = urlparse(SUPERSET_BASE_URL).netloc
+
+    cookies: Dict[str, str] = {}
+    for c in state.get("cookies", []):
+        domain = (c.get("domain") or "").lstrip(".")
+        if domain and domain not in host and host not in domain:
+            continue
+        name, value = c.get("name"), c.get("value")
+        if name and value is not None:
+            cookies[name] = value
+    return cookies or None
+
+
 @asynccontextmanager
 async def superset_lifespan(server: FastMCP) -> AsyncIterator[SupersetContext]:
     """Manage application lifecycle for Superset integration"""
@@ -107,8 +138,33 @@ async def superset_lifespan(server: FastMCP) -> AsyncIterator[SupersetContext]:
     # Create context
     ctx = SupersetContext(client=client, base_url=SUPERSET_BASE_URL, app=app)
 
-    # Try to load existing token
-    stored_token = load_stored_token()
+    # Prefer browser session cookies (e.g., captured from Azure SSO via
+    # capture_session.py) when available — works without provider=db login.
+    session_cookies = load_session_cookies()
+    if session_cookies:
+        for name, value in session_cookies.items():
+            client.cookies.set(name, value)
+        try:
+            response = await client.get("/api/v1/me/")
+            if response.status_code == 200:
+                ctx.access_token = "session"  # sentinel: requires_auth passes
+                try:
+                    ctx.session_mtime = os.path.getmtime(SESSION_STATE_PATH)
+                except OSError:
+                    pass
+                logger.info("Using browser session cookies for authentication")
+            else:
+                logger.info(
+                    f"Session cookies invalid (status {response.status_code}); "
+                    "falling back to token auth."
+                )
+                client.cookies.clear()
+        except Exception as e:
+            logger.info(f"Error verifying session cookies: {e}")
+            client.cookies.clear()
+
+    # Try to load existing token (fallback / db-provider users)
+    stored_token = load_stored_token() if not ctx.access_token else None
     if stored_token:
         ctx.access_token = stored_token
         # Set the token in the client headers
@@ -151,6 +207,32 @@ R = TypeVar("R")
 # ===== Helper Functions and Decorators =====
 
 
+def maybe_reload_session(superset_ctx: "SupersetContext") -> bool:
+    """If .superset_session.json was updated since last load, refresh cookies.
+
+    Returns True if cookies were (re)loaded.
+    """
+    try:
+        mtime = os.path.getmtime(SESSION_STATE_PATH)
+    except OSError:
+        return False
+    if mtime <= superset_ctx.session_mtime:
+        return False
+
+    cookies = load_session_cookies()
+    if not cookies:
+        return False
+    superset_ctx.client.cookies.clear()
+    for name, value in cookies.items():
+        superset_ctx.client.cookies.set(name, value)
+    superset_ctx.client.headers.pop("Authorization", None)
+    superset_ctx.access_token = "session"
+    superset_ctx.csrf_token = None  # force CSRF re-fetch under new session
+    superset_ctx.session_mtime = mtime
+    logger.info("Reloaded browser session cookies from updated state file")
+    return True
+
+
 def requires_auth(
     func: Callable[..., Awaitable[Dict[str, Any]]],
 ) -> Callable[..., Awaitable[Dict[str, Any]]]:
@@ -160,8 +242,14 @@ def requires_auth(
     async def wrapper(ctx: Context, *args, **kwargs) -> Dict[str, Any]:
         superset_ctx: SupersetContext = ctx.request_context.lifespan_context
 
+        # Hot-reload session cookies if capture_session.py refreshed the file
+        maybe_reload_session(superset_ctx)
+
         if not superset_ctx.access_token:
-            return {"error": "Not authenticated. Please authenticate first."}
+            return {
+                "error": "Not authenticated. Run superset_auth_capture_session "
+                "to log in via browser, or call superset_auth_authenticate_user."
+            }
 
         return await func(ctx, *args, **kwargs)
 
@@ -433,7 +521,13 @@ async def superset_auth_authenticate_user(
         refresh: Whether to refresh the token if invalid (defaults to True)
 
     Returns:
-        A dictionary with authentication status and access token or error information
+        A dictionary with authentication status and access token or error information.
+
+    NOTE for agents: this tool only works on Superset instances that accept
+    `provider=db` (username/password). If the deployment uses SSO/Azure/MFA, this
+    will fail with 401 "Not authorized" — in that case, call
+    `superset_auth_capture_session` instead to log in via browser. The error
+    payload returned on 401/403 includes a `fallback` hint pointing to that tool.
     """
     superset_ctx: SupersetContext = ctx.request_context.lifespan_context
 
@@ -459,8 +553,18 @@ async def superset_auth_authenticate_user(
     password = password or SUPERSET_PASSWORD
 
     if not username or not password:
+        # No credentials available — auto-launch browser-based capture instead
+        # of bouncing back to the agent with an actionable error.
+        logger.info("No db credentials available. Auto-launching capture_session.")
+        capture = await superset_auth_capture_session(ctx)
         return {
-            "error": "Username and password must be provided either as arguments or set in environment variables"
+            "error": "No username/password available for db-provider login.",
+            "fallback": (
+                "Browser was auto-launched via superset_auth_capture_session. "
+                "Complete the login (incl. SSO/Azure/MFA) and then retry your "
+                "original tool call. Do NOT ask the user to run anything manually."
+            ),
+            "capture_session": capture,
         }
 
     try:
@@ -476,9 +580,25 @@ async def superset_auth_authenticate_user(
         )
 
         if response.status_code != 200:
-            return {
+            result = {
                 "error": f"Failed to get access token: {response.status_code} - {response.text}"
             }
+            if response.status_code in (401, 403):
+                # Auto-launch the browser-based fallback so the agent doesn't
+                # need a second tool call. capture_session is fully non-blocking.
+                logger.info(
+                    "DB-provider login returned %s. Auto-launching capture_session.",
+                    response.status_code,
+                )
+                capture = await superset_auth_capture_session(ctx)
+                result["fallback"] = (
+                    "DB-provider login failed (likely SSO/Azure/MFA). A browser was "
+                    "auto-launched via superset_auth_capture_session — complete the "
+                    "login, then retry your original tool call. Do NOT ask the user "
+                    "to run anything manually."
+                )
+                result["capture_session"] = capture
+            return result
 
         data = response.json()
         access_token = data.get("access_token")
@@ -501,6 +621,51 @@ async def superset_auth_authenticate_user(
 
     except Exception as e:
         return {"error": f"Authentication error: {str(e)}"}
+
+
+@mcp.tool()
+async def superset_auth_capture_session(ctx: Context) -> Dict[str, Any]:
+    """Launch capture_session.py in a detached subprocess to log in via browser.
+
+    Opens a Chromium window where the user completes Superset login (Azure SSO,
+    MFA, etc.). After login, cookies are written to .superset_session.json and
+    automatically picked up by subsequent tool calls (no MCP restart needed).
+
+    Returns immediately — does not wait for the browser flow to finish. Call any
+    superset_* tool after logging in; the session will be hot-reloaded.
+    """
+    import subprocess
+    import sys as _sys
+
+    script_dir = os.path.dirname(__file__)
+    script = os.path.join(script_dir, "capture_session.py")
+    if not os.path.exists(script):
+        return {"error": f"capture_session.py not found at {script}"}
+
+    # Prefer the project's .venv (has playwright + python-dotenv installed)
+    # over sys.executable, which is whatever Python launched the MCP server
+    # and may lack the required dependencies.
+    venv_python = os.path.join(script_dir, ".venv", "bin", "python")
+    python_bin = venv_python if os.path.exists(venv_python) else _sys.executable
+
+    try:
+        proc = subprocess.Popen(
+            [python_bin, script],
+            cwd=os.path.dirname(script),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as e:
+        return {"error": f"Failed to launch capture_session.py: {e}"}
+
+    return {
+        "message": "Browser launched. Complete login (incl. Azure/MFA), then "
+        "retry your previous tool call. The MCP will auto-reload the session.",
+        "pid": proc.pid,
+        "state_path": SESSION_STATE_PATH,
+    }
 
 
 # ===== Dashboard Tools =====

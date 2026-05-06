@@ -11,3 +11,6 @@ wheels/
 
 .env
 .superset_token
+.superset_session.json
+
+.idea/*

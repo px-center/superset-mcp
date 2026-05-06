@@ -20,6 +20,7 @@ dependencies = [
     "mcp[cli]>=1.4.0",
     "uvicorn>=0.34.0",
     "python-dotenv>=1.0.0",
+    "playwright>=1.49.0",
 ]
 
 [project.urls]
@@ -29,6 +30,9 @@ Issues = "https://github.com/yourusername/superset-mcp/issues"
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["main", "main_lite", "capture_session"]
 
 [tool.black]
 line-length = 88
