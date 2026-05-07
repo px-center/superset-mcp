@@ -1,85 +1,101 @@
-# Superset MCP Integration
-[![smithery badge](https://smithery.ai/badge/@aptro/superset-mcp)](https://smithery.ai/server/@aptro/superset-mcp)
+# Integração Superset MCP
 
-MCP server for interacting with Apache Superset, enabling AI agents to connect to and control a Superset instance programmatically.
+Servidor MCP para interagir com o Apache Superset, permitindo que agentes de IA conectem e controlem uma instância do Superset programaticamente.
 
-## Setup Instructions
+> **Você NÃO precisa instalar o Superset localmente.** Este MCP conecta a qualquer instância do Superset acessível via HTTP — produção, staging ou local.
+> Siga o **Apêndice A** apenas se realmente quiser uma instância de teste na sua máquina.
 
-> **You do NOT need to install Superset locally.** This MCP connects to any Superset instance reachable over HTTP — production, staging, or local.
-> Only follow **Appendix A** (run Superset locally) if you actually want a test instance on your machine.
+## Configuração Rápida
 
-### Installing via Smithery
-
-To install Superset Integration for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@aptro/superset-mcp):
+Para a configuração padrão (Superset remoto + Claude Code + SSO):
 
 ```bash
-npx -y @smithery/cli install @aptro/superset-mcp --client claude
+# 1. Clone
+git clone <repo-url> superset-mcp
+cd superset-mcp
+
+# 2. Instale o uv (se ainda não tiver)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 3. Crie venv e instale dependências
+uv venv --python 3.13
+uv pip install -e .
+
+# 4. Instale o Chromium (necessário para login SSO)
+.venv/bin/playwright install chromium
+
+# 5. Configure o .env
+cat > .env <<'EOF'
+SUPERSET_BASE_URL=https://superset.your-company.com
+EOF
+
+# 6. Registre o MCP no Claude Code
+claude mcp add superset-mcp -- uv run --directory "$(pwd)" python main.py
 ```
 
-### Manual Installation (remote Superset)
+Depois, no Claude, chame `superset_auth_capture_session` para fazer o primeiro login via browser.
 
-#### Prerequisites
-- Python 3.10+ (3.13 recommended)
-- [`uv`](https://docs.astral.sh/uv/getting-started/installation/)
-- Network access to the target Superset URL
+---
 
-#### 1. Clone this repository
+## Instalação Manual
+
+### Pré-requisitos
+- Python 3.10+ (3.13 recomendado)
+- [`uv`](https://docs.astral.sh/uv/getting-started/installation/) — instale com `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- Acesso de rede ao Superset alvo
+
+### 1. Clone o repositório
 
 ```bash
 git clone <repo-url> superset-mcp
 cd superset-mcp
 ```
 
-#### 2. Create a venv and install dependencies
+### 2. Crie o venv e instale dependências
 
 ```bash
 uv venv --python 3.13
 uv pip install -e .
 ```
 
-#### 3. (Optional) Install Chromium for SSO/Azure login
+### 3. Instale o Chromium (para SSO/Azure)
 
-Only required if your Superset instance uses SSO (Azure/OAuth) and you intend to use `superset_auth_capture_session` (browser login).
-Skip this step if you authenticate with username/password (`provider=db`).
+Necessário se o Superset usa SSO (Azure/OAuth) e você for usar `superset_auth_capture_session`.
+Pule este passo se autentica com usuário/senha (`provider=db`).
 
 ```bash
 .venv/bin/playwright install chromium
 ```
 
-> ⚠️ Use `playwright install chromium` (without `--with-deps` on macOS — that flag may pull only `headless-shell`, which has no visible window). On Linux, `--with-deps` may be needed to install system libraries.
+> ⚠️ Use `playwright install chromium` (sem `--with-deps` no macOS — esta flag pode trazer apenas `headless-shell`, sem janela visível). No Linux, `--with-deps` pode ser necessário para libs de sistema.
 
-#### 4. Configure `.env`
+### 4. Configure o `.env`
 
 ```bash
 cat > .env <<'EOF'
-SUPERSET_BASE_URL=https://superset.your-company.com   # remote Superset URL
+SUPERSET_BASE_URL=https://superset.your-company.com   # URL do Superset
 
-# Only for username/password login (provider=db). Leave blank if using SSO:
+# Apenas para login usuário/senha (provider=db). Deixe em branco se usar SSO:
 # SUPERSET_USERNAME=your.user
 # SUPERSET_PASSWORD=your.password
 EOF
 ```
 
-#### 5. Register the MCP with Claude
+### 5. Registre o MCP no Claude Code
 
-Claude Desktop:
-```bash
-mcp install main.py
-```
-
-Claude Code (Linux/macOS):
 ```bash
 claude mcp add superset-mcp -- uv run --directory {THIS_REPOSITORY_FOLDER} python main.py
 ```
 
-Lite version (fewer tools, faster startup):
+Versão lite (menos ferramentas, startup mais rápido):
+
 ```bash
 claude mcp add superset-mcp-lite -- uv run --directory {THIS_REPOSITORY_FOLDER} python main_lite.py
 ```
 
-##### Manual config (`~/.claude.json`)
+#### Configuração manual (`~/.claude.json`)
 
-If you prefer editing the config file directly instead of using `claude mcp add`, add the block below under `"mcpServers"`:
+Se preferir editar o arquivo de configuração diretamente em vez de usar `claude mcp add`, adicione o bloco abaixo dentro de `"mcpServers"` (as variáveis de ambiente são lidas do `.env` do repositório):
 
 ```json
 {
@@ -93,201 +109,202 @@ If you prefer editing the config file directly instead of using `claude mcp add`
         "run",
         "python",
         "main.py"
-      ],
-      "env": {
-        "SUPERSET_BASE_URL": "https://superset.your-company.com"
-      }
+      ]
     }
   }
 }
 ```
 
-> ⚠️ Claude Code launches MCP servers with a minimal `PATH`. If startup fails with `uv: command not found`, replace `"command": "uv"` with the absolute path returned by `which uv` (e.g. `/opt/homebrew/bin/uv` or `~/.local/bin/uv`).
+> ⚠️ O Claude Code inicia servidores MCP com um `PATH` mínimo. Se a inicialização falhar com `uv: command not found`, substitua `"command": "uv"` pelo caminho absoluto retornado por `which uv` (ex.: `/opt/homebrew/bin/uv` ou `~/.local/bin/uv`).
 
-Sync dependencies once so `uv run` does not have to install on first launch:
+Sincronize as dependências uma vez para que o `uv run` não precise instalar no primeiro launch:
 
 ```bash
 cd /absolute/path/to/superset-mcp
 uv sync
-uv run playwright install chromium   # only if using SSO
+uv run playwright install chromium   # apenas se usar SSO
 ```
 
-Then reload the MCP in Claude Code (`/mcp` → reconnect, or restart the session).
+Depois recarregue o MCP no Claude Code (`/mcp` → reconnect, ou reinicie a sessão).
 
-#### 6. First login
+### 6. Primeiro login
 
-- **SSO (Azure/OAuth)**: call `superset_auth_capture_session` in Claude — Chromium opens for login. Once you reach `/superset/welcome/`, cookies are saved to `.superset_session.json` and the MCP hot-reloads them.
-- **Username/password (`provider=db`)**: call `superset_auth_authenticate_user` (uses `SUPERSET_USERNAME` / `SUPERSET_PASSWORD` from `.env`).
+- **SSO (Azure/OAuth)**: chame `superset_auth_capture_session` no Claude — o Chromium abre para o login. Ao chegar em `/superset/welcome/`, os cookies são salvos em `.superset_session.json` e o MCP recarrega.
+- **Usuário/senha (`provider=db`)**: chame `superset_auth_authenticate_user` (usa `SUPERSET_USERNAME` / `SUPERSET_PASSWORD` do `.env`).
 
-## Usage with Claude
+---
 
-After setup, you can interact with your Superset instance via Claude using natural language requests. Here are some examples:
+## Uso com o Claude
 
-### Dashboard Management
+Após a configuração, você pode interagir com sua instância Superset via Claude usando linguagem natural. Alguns exemplos:
 
-- **View dashboards**: "Show me all my Superset dashboards"
-- **Get dashboard details**: "Show me the details of dashboard with ID 5"
-- **Create dashboard**: "Create a new dashboard titled 'Sales Overview'"
-- **Update dashboard**: "Update dashboard 3 to have the title 'Updated Sales Report'"
-- **Delete dashboard**: "Delete dashboard with ID 7"
+### Gerenciamento de Dashboards
 
-### Chart Management
+- **Listar dashboards**: "Mostre todos os meus dashboards do Superset"
+- **Detalhes de dashboard**: "Mostre os detalhes do dashboard com ID 5"
+- **Criar dashboard**: "Crie um novo dashboard chamado 'Visão de Vendas'"
+- **Atualizar dashboard**: "Atualize o dashboard 3 com o título 'Relatório de Vendas Atualizado'"
+- **Deletar dashboard**: "Delete o dashboard com ID 7"
 
-- **List all charts**: "What charts do I have in my Superset instance?"
-- **View chart details**: "Show me the details of chart with ID 10"
-- **Create chart**: "Create a new bar chart using dataset 3"
-- **Update chart**: "Update chart 5 to use a line visualization instead of bar"
-- **Delete chart**: "Delete chart with ID 12"
+### Gerenciamento de Charts
 
-### Database and Dataset Operations
+- **Listar charts**: "Quais charts eu tenho na minha instância do Superset?"
+- **Detalhes de chart**: "Mostre os detalhes do chart com ID 10"
+- **Criar chart**: "Crie um novo chart de barras usando o dataset 3"
+- **Atualizar chart**: "Atualize o chart 5 para usar visualização de linha em vez de barra"
+- **Deletar chart**: "Delete o chart com ID 12"
 
-- **List databases**: "Show me all databases connected to Superset"
-- **List datasets**: "What datasets are available in my Superset instance?"
-- **Get database tables**: "What tables are available in database with ID 1?"
-- **Execute SQL**: "Run this SQL query on database 1: SELECT * FROM users LIMIT 10"
-- **Create dataset**: "Create a new dataset from table 'customers' in database 2"
-- **Update database**: "Update the connection settings for database 3"
-- **Delete database**: "Delete database connection with ID 4"
-- **Validate SQL**: "Is this SQL valid for database 2: SELECT * FROM customers JOIN orders"
-- **Get database catalogs**: "Show me the catalogs available in database 1"
-- **Get database functions**: "What functions are available in database 2?"
-- **Check related objects**: "What dashboards and charts use database 1?"
+### Operações de Banco de Dados e Datasets
 
-### SQL Lab Features
-
-- **Execute queries**: "Run this SQL query: SELECT COUNT(*) FROM orders"
-- **Format SQL**: "Format this SQL query: SELECT id,name,age FROM users WHERE age>21"
-- **Estimate query cost**: "Estimate the cost of this query: SELECT * FROM large_table"
-- **Get saved queries**: "Show me all my saved SQL queries"
-- **Get query results**: "Get the results of query with key 'abc123'"
-
-### User and System Information
-
-- **View user info**: "Who am I logged in as?"
-- **Get user roles**: "What roles do I have in Superset?"
-- **View recent activity**: "Show me recent activity in my Superset instance"
-- **Get menu data**: "What menu items do I have access to?"
-- **Get base URL**: "What is the URL of the Superset instance I'm connected to?"
-
-### Tag Management
-
-- **List tags**: "Show me all tags in my Superset instance"
-- **Create tag**: "Create a new tag called 'Finance'"
-- **Delete tag**: "Delete the tag with ID 5"
-- **Tag an object**: "Add the tag 'Finance' to dashboard 3"
-- **Remove tag**: "Remove the tag 'Finance' from chart 7"
-
-## Available MCP Tools
-
-This plugin offers the following MCP tools that Claude can use:
-
-### Authentication
-- `superset_auth_check_token_validity` - Check if the current access token is valid
-- `superset_auth_refresh_token` - Refresh the access token
-- `superset_auth_authenticate_user` - Authenticate with Superset
-
-### Dashboards
-- `superset_dashboard_list` - List all dashboards
-- `superset_dashboard_get_by_id` - Get a specific dashboard
-- `superset_dashboard_create` - Create a new dashboard
-- `superset_dashboard_update` - Update an existing dashboard
-- `superset_dashboard_delete` - Delete a dashboard
-
-### Charts
-- `superset_chart_list` - List all charts
-- `superset_chart_get_by_id` - Get a specific chart
-- `superset_chart_create` - Create a new chart
-- `superset_chart_update` - Update an existing chart
-- `superset_chart_delete` - Delete a chart
-
-### Databases
-- `superset_database_list` - List all databases
-- `superset_database_get_by_id` - Get a specific database
-- `superset_database_create` - Create a new database connection
-- `superset_database_get_tables` - List tables in a database
-- `superset_database_schemas` - Get schemas for a database
-- `superset_database_test_connection` - Test a database connection
-- `superset_database_update` - Update an existing database connection
-- `superset_database_delete` - Delete a database connection
-- `superset_database_get_catalogs` - Get catalogs for a database
-- `superset_database_get_connection` - Get database connection information
-- `superset_database_get_function_names` - Get function names supported by a database
-- `superset_database_get_related_objects` - Get charts and dashboards associated with a database
-- `superset_database_validate_sql` - Validate arbitrary SQL against a database
-- `superset_database_validate_parameters` - Validate database connection parameters
-
-### Datasets
-- `superset_dataset_list` - List all datasets
-- `superset_dataset_get_by_id` - Get a specific dataset
-- `superset_dataset_create` - Create a new dataset
+- **Listar bancos**: "Mostre todos os bancos conectados ao Superset"
+- **Listar datasets**: "Quais datasets estão disponíveis na minha instância do Superset?"
+- **Tabelas do banco**: "Quais tabelas existem no banco com ID 1?"
+- **Executar SQL**: "Rode esta query no banco 1: SELECT * FROM users LIMIT 10"
+- **Criar dataset**: "Crie um novo dataset a partir da tabela 'customers' no banco 2"
+- **Atualizar banco**: "Atualize as configurações de conexão do banco 3"
+- **Deletar banco**: "Delete a conexão do banco com ID 4"
+- **Validar SQL**: "Esta SQL é válida no banco 2: SELECT * FROM customers JOIN orders"
+- **Catálogos do banco**: "Mostre os catálogos disponíveis no banco 1"
+- **Funções do banco**: "Quais funções estão disponíveis no banco 2?"
+- **Objetos relacionados**: "Quais dashboards e charts usam o banco 1?"
 
 ### SQL Lab
-- `superset_sqllab_execute_query` - Execute a SQL query
-- `superset_sqllab_get_saved_queries` - List saved SQL queries
-- `superset_sqllab_format_sql` - Format a SQL query
-- `superset_sqllab_get_results` - Get query results
-- `superset_sqllab_estimate_query_cost` - Estimate query cost
-- `superset_sqllab_export_query_results` - Export query results to CSV
-- `superset_sqllab_get_bootstrap_data` - Get SQL Lab bootstrap data
+
+- **Executar queries**: "Rode esta query SQL: SELECT COUNT(*) FROM orders"
+- **Formatar SQL**: "Formate esta query: SELECT id,name,age FROM users WHERE age>21"
+- **Estimar custo**: "Estime o custo desta query: SELECT * FROM large_table"
+- **Queries salvas**: "Mostre todas as minhas queries SQL salvas"
+- **Resultados**: "Pegue os resultados da query com chave 'abc123'"
+
+### Informações de Usuário e Sistema
+
+- **Usuário atual**: "Com qual usuário estou logado?"
+- **Roles do usuário**: "Quais roles eu tenho no Superset?"
+- **Atividade recente**: "Mostre a atividade recente da minha instância do Superset"
+- **Menu**: "Quais itens de menu eu tenho acesso?"
+- **URL base**: "Qual a URL da instância do Superset que estou conectado?"
+
+### Gerenciamento de Tags
+
+- **Listar tags**: "Mostre todas as tags da minha instância do Superset"
+- **Criar tag**: "Crie uma nova tag chamada 'Finance'"
+- **Deletar tag**: "Delete a tag com ID 5"
+- **Adicionar tag**: "Adicione a tag 'Finance' ao dashboard 3"
+- **Remover tag**: "Remova a tag 'Finance' do chart 7"
+
+## Ferramentas MCP Disponíveis
+
+Este plugin oferece as seguintes ferramentas MCP que o Claude pode usar:
+
+### Autenticação
+- `superset_auth_check_token_validity` - Verifica se o token de acesso é válido
+- `superset_auth_refresh_token` - Atualiza o token de acesso
+- `superset_auth_authenticate_user` - Autentica no Superset
+- `superset_auth_capture_session` - Captura sessão via browser (SSO)
+
+### Dashboards
+- `superset_dashboard_list` - Lista todos os dashboards
+- `superset_dashboard_get_by_id` - Busca um dashboard específico
+- `superset_dashboard_create` - Cria um novo dashboard
+- `superset_dashboard_update` - Atualiza um dashboard existente
+- `superset_dashboard_delete` - Deleta um dashboard
+
+### Charts
+- `superset_chart_list` - Lista todos os charts
+- `superset_chart_get_by_id` - Busca um chart específico
+- `superset_chart_create` - Cria um novo chart
+- `superset_chart_update` - Atualiza um chart existente
+- `superset_chart_delete` - Deleta um chart
+
+### Bancos de Dados
+- `superset_database_list` - Lista todos os bancos
+- `superset_database_get_by_id` - Busca um banco específico
+- `superset_database_create` - Cria uma nova conexão de banco
+- `superset_database_get_tables` - Lista tabelas de um banco
+- `superset_database_schemas` - Obtém schemas de um banco
+- `superset_database_test_connection` - Testa uma conexão de banco
+- `superset_database_update` - Atualiza uma conexão existente
+- `superset_database_delete` - Deleta uma conexão de banco
+- `superset_database_get_catalogs` - Obtém catálogos de um banco
+- `superset_database_get_connection` - Obtém informações da conexão
+- `superset_database_get_function_names` - Lista funções suportadas pelo banco
+- `superset_database_get_related_objects` - Obtém charts e dashboards do banco
+- `superset_database_validate_sql` - Valida SQL arbitrária contra um banco
+- `superset_database_validate_parameters` - Valida parâmetros de conexão
+
+### Datasets
+- `superset_dataset_list` - Lista todos os datasets
+- `superset_dataset_get_by_id` - Busca um dataset específico
+- `superset_dataset_create` - Cria um novo dataset
+- `superset_dataset_create_virtual` - Cria um dataset virtual
+
+### SQL Lab
+- `superset_sqllab_execute_query` - Executa uma query SQL
+- `superset_sqllab_get_saved_queries` - Lista queries SQL salvas
+- `superset_sqllab_format_sql` - Formata uma query SQL
+- `superset_sqllab_get_results` - Obtém resultados da query
+- `superset_sqllab_estimate_query_cost` - Estima o custo de uma query
+- `superset_sqllab_export_query_results` - Exporta resultados para CSV
+- `superset_sqllab_get_bootstrap_data` - Obtém dados de bootstrap do SQL Lab
 
 ### Queries
-- `superset_query_list` - List all queries
-- `superset_query_get_by_id` - Get a specific query
-- `superset_query_stop` - Stop a running query
+- `superset_query_list` - Lista todas as queries
+- `superset_query_get_by_id` - Busca uma query específica
+- `superset_query_stop` - Interrompe uma query em execução
 
-### Saved Queries
-- `superset_saved_query_get_by_id` - Get a specific saved query
-- `superset_saved_query_create` - Create a new saved query
+### Queries Salvas
+- `superset_saved_query_get_by_id` - Busca uma query salva específica
+- `superset_saved_query_create` - Cria uma nova query salva
 
-### User Information
-- `superset_user_get_current` - Get current user info
-- `superset_user_get_roles` - Get user roles
+### Usuário
+- `superset_user_get_current` - Obtém informações do usuário atual
+- `superset_user_get_roles` - Obtém roles do usuário
 
-### Activity
-- `superset_activity_get_recent` - Get recent activity data
+### Atividade
+- `superset_activity_get_recent` - Obtém dados de atividade recente
 
-### System
-- `superset_menu_get` - Get menu data
-- `superset_config_get_base_url` - Get the base URL of the Superset instance
+### Sistema
+- `superset_menu_get` - Obtém dados do menu
+- `superset_config_get_base_url` - Obtém a URL base da instância do Superset
 
 ### Tags
-- `superset_tag_list` - List all tags
-- `superset_tag_create` - Create a new tag
-- `superset_tag_get_by_id` - Get a specific tag
-- `superset_tag_objects` - Get objects associated with tags
-- `superset_tag_delete` - Delete a tag
-- `superset_tag_object_add` - Add a tag to an object
-- `superset_tag_object_remove` - Remove a tag from an object
+- `superset_tag_list` - Lista todas as tags
+- `superset_tag_create` - Cria uma nova tag
+- `superset_tag_get_by_id` - Busca uma tag específica
+- `superset_tag_objects` - Obtém objetos associados a tags
+- `superset_tag_delete` - Deleta uma tag
+- `superset_tag_object_add` - Adiciona uma tag a um objeto
+- `superset_tag_object_remove` - Remove uma tag de um objeto
 
-### Exploration Tools
-- `superset_explore_form_data_create` - Create form data for chart exploration
-- `superset_explore_form_data_get` - Get form data for chart exploration
-- `superset_explore_permalink_create` - Create a permalink for chart exploration
-- `superset_explore_permalink_get` - Get a permalink for chart exploration
+### Exploração
+- `superset_explore_form_data_create` - Cria form data para exploração de chart
+- `superset_explore_form_data_get` - Obtém form data para exploração de chart
+- `superset_explore_permalink_create` - Cria um permalink para exploração
+- `superset_explore_permalink_get` - Obtém um permalink de exploração
 
-### Advanced Data Types
-- `superset_advanced_data_type_convert` - Convert a value to an advanced data type
-- `superset_advanced_data_type_list` - List available advanced data types
+### Tipos de Dados Avançados
+- `superset_advanced_data_type_convert` - Converte um valor para um tipo de dado avançado
+- `superset_advanced_data_type_list` - Lista tipos de dados avançados disponíveis
 
-## Environment Variables
+## Variáveis de Ambiente
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| SUPERSET_BASE_URL | Superset instance URL (remote or local) | http://localhost:8088 | yes |
-| SUPERSET_USERNAME | Username (only for `provider=db`; do not use with SSO) | — | no |
-| SUPERSET_PASSWORD | Password (only for `provider=db`; do not use with SSO) | — | no |
+| Variável | Descrição | Padrão | Obrigatória |
+|----------|-----------|--------|-------------|
+| SUPERSET_BASE_URL | URL da instância do Superset (remota ou local) | http://localhost:8088 | sim |
+| SUPERSET_USERNAME | Usuário (apenas para `provider=db`; não use com SSO) | — | não |
+| SUPERSET_PASSWORD | Senha (apenas para `provider=db`; não use com SSO) | — | não |
 
-## Troubleshooting
+## Solução de Problemas
 
-- **SSO timeout (`Timeout aguardando redirecionamento pós-login`)**: login did not reach `/superset/welcome/` within 5 min. Check for pending MFA, or confirm `SUPERSET_BASE_URL` matches the domain where SSO redirects.
-- **Chromium does not open**: make sure you ran `.venv/bin/playwright install chromium` (without `--with-deps` on macOS) and that `~/Library/Caches/ms-playwright/chromium-*` exists (full build, not just `chromium_headless_shell-*`).
-- **`Not authenticated`**: call `superset_auth_capture_session` (SSO) or `superset_auth_authenticate_user` (username/password).
-- **MCP launches `capture_session.py` but it turns into a zombie process**: the Python running the MCP does not have playwright installed. The MCP automatically prefers `<repo>/.venv/bin/python` — ensure the venv exists and `playwright` is installed there.
-- **`Multiple top-level modules` when running `uv pip install`**: already fixed via `[tool.setuptools] py-modules = [...]` in `pyproject.toml`.
+- **Timeout no SSO (`Timeout aguardando redirecionamento pós-login`)**: o login não chegou em `/superset/welcome/` em 5 min. Verifique MFA pendente, ou confirme se `SUPERSET_BASE_URL` corresponde ao domínio para onde o SSO redireciona.
+- **Chromium não abre**: confirme que rodou `.venv/bin/playwright install chromium` (sem `--with-deps` no macOS) e que `~/Library/Caches/ms-playwright/chromium-*` existe (build completo, não apenas `chromium_headless_shell-*`).
+- **`Not authenticated`**: chame `superset_auth_capture_session` (SSO) ou `superset_auth_authenticate_user` (usuário/senha).
+- **MCP inicia `capture_session.py` mas vira processo zombie**: o Python que roda o MCP não tem playwright instalado. O MCP prefere automaticamente `<repo>/.venv/bin/python` — confirme que o venv existe e tem `playwright` instalado.
+- **`Multiple top-level modules` ao rodar `uv pip install`**: já corrigido via `[tool.setuptools] py-modules = [...]` no `pyproject.toml`.
 
-## Appendix A — Run Superset locally (optional)
+## Apêndice A — Rodar o Superset localmente (opcional)
 
-Use this **only** if you want a local Superset test instance. Skip this section if you are connecting to a remote Superset.
+Use isto **apenas** se quiser uma instância local de teste do Superset. Pule esta seção se for conectar a um Superset remoto.
 
 ```bash
 git clone --branch 4.1.1 --depth 1 https://github.com/apache/superset && \
@@ -295,21 +312,21 @@ cd superset && \
 docker compose -f docker-compose-image-tag.yml up
 ```
 
-Open http://localhost:8088 — default credentials: `admin` / `admin`.
-Then point the MCP's `.env` to `SUPERSET_BASE_URL=http://localhost:8088`.
+Abra http://localhost:8088 — credenciais padrão: `admin` / `admin`.
+Depois aponte o `.env` do MCP para `SUPERSET_BASE_URL=http://localhost:8088`.
 
-## Security Notes
+## Notas de Segurança
 
-- Your Superset credentials are stored only in your local `.env` file
-- The access token is stored in `.superset_token` file in the project directory
-- All authentication happens directly between the MCP server and your Superset instance
-- No credentials are transmitted to Claude or any third parties
-- For production use, consider using more secure authentication methods
+- Suas credenciais do Superset ficam apenas no `.env` local
+- O access token é armazenado em `.superset_token` no diretório do projeto
+- Toda autenticação acontece diretamente entre o MCP e sua instância Superset
+- Nenhuma credencial é transmitida ao Claude ou terceiros
+- Para uso em produção, considere métodos de autenticação mais seguros
 
-## Contributing
+## Contribuindo
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contribuições são bem-vindas! Sinta-se à vontade para abrir um Pull Request.
 
-## License
+## Licença
 
 MIT
