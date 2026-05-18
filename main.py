@@ -1379,20 +1379,38 @@ async def superset_dataset_create_virtual(
 @requires_auth
 @handle_api_errors
 async def superset_sqllab_execute_query(
-    ctx: Context, database_id: int, sql: str
+    ctx: Context,
+    database_id: int,
+    sql: str,
+    max_rows: int = 100,
+    format: str = "rows",
+    include_metadata: bool = False,
 ) -> Dict[str, Any]:
     """
-    Execute a SQL query in SQL Lab
+    Execute a SQL query in SQL Lab with token-efficient output.
 
-    Makes a request to the /api/v1/sqllab/execute/ endpoint to run a SQL query
-    against the specified database.
+    Pushes aggregations to SQL (use GROUP BY / SUM / COUNT in your query) and
+    returns a compact response. Strips verbose metadata and redundant column
+    blocks by default.
 
     Args:
         database_id: ID of the database to query
-        sql: SQL query to execute
+        sql: SQL query to execute (do aggregations here for max efficiency)
+        max_rows: Truncate result to this many rows (default 100). Use a higher
+            value or 0 for no limit. The response always reports `total_rows`
+            and `truncated`.
+        format: Output shape for the data payload:
+            - "rows" (default): {columns: [...], data: [[...], [...]]} — most compact
+            - "records": [{col: val, ...}] — backward-compatible verbose shape
+            - "columnar": {col: [v1, v2, ...]} — efficient for wide numeric data
+            - "summary": only {row_count, columns, dtypes, sample (3 rows),
+              numeric_stats {min,max,sum,avg,count}} — for sanity-checking large results
+        include_metadata: When True, includes the original Superset `query`
+            metadata block (timestamps, user, etc.). Default False to save tokens.
 
     Returns:
-        A dictionary with query results or execution status for async queries
+        Compact dict with: status, query_id, columns, total_rows, truncated,
+        and either `data` (formats rows/records/columnar) or `summary`.
     """
     # Ensure we have a CSRF token before executing the query
     superset_ctx: SupersetContext = ctx.request_context.lifespan_context
@@ -1408,7 +1426,99 @@ async def superset_sqllab_execute_query(
         "select_as_cta": False,
     }
 
-    return await make_api_request(ctx, "post", "/api/v1/sqllab/execute/", data=payload)
+    raw = await make_api_request(
+        ctx, "post", "/api/v1/sqllab/execute/", data=payload
+    )
+
+    # If the API returned an error or non-standard payload, pass it through
+    if not isinstance(raw, dict) or "data" not in raw:
+        return raw
+
+    return _format_sqllab_result(raw, max_rows, format, include_metadata)
+
+
+def _format_sqllab_result(
+    raw: Dict[str, Any],
+    max_rows: int,
+    format: str,
+    include_metadata: bool,
+) -> Dict[str, Any]:
+    """Shape the raw Superset SQL Lab response into a compact result."""
+    records: List[Dict[str, Any]] = raw.get("data") or []
+    columns_meta = raw.get("columns") or []
+    column_names: List[str] = [
+        c.get("name") for c in columns_meta if isinstance(c, dict) and c.get("name")
+    ]
+    if not column_names and records:
+        column_names = list(records[0].keys())
+
+    total_rows = len(records)
+    truncated = False
+    if max_rows and max_rows > 0 and total_rows > max_rows:
+        records = records[:max_rows]
+        truncated = True
+
+    result: Dict[str, Any] = {
+        "status": raw.get("status"),
+        "query_id": raw.get("query_id"),
+        "columns": column_names,
+        "total_rows": total_rows,
+        "returned_rows": len(records),
+        "truncated": truncated,
+    }
+
+    if format == "summary":
+        result["summary"] = _build_summary(records, column_names, columns_meta, total_rows)
+    elif format == "records":
+        result["data"] = records
+    elif format == "columnar":
+        result["data"] = {
+            col: [r.get(col) for r in records] for col in column_names
+        }
+    else:  # "rows" — default, most compact
+        result["data"] = [[r.get(col) for col in column_names] for r in records]
+
+    if include_metadata:
+        result["metadata"] = raw.get("query")
+
+    return result
+
+
+def _build_summary(
+    records: List[Dict[str, Any]],
+    column_names: List[str],
+    columns_meta: List[Dict[str, Any]],
+    total_rows: int,
+) -> Dict[str, Any]:
+    """Build a summary block with dtypes, sample, and numeric stats."""
+    dtypes: Dict[str, str] = {}
+    for c in columns_meta:
+        if isinstance(c, dict) and c.get("name"):
+            dtypes[c["name"]] = c.get("type") or c.get("type_generic") or "unknown"
+
+    sample = records[:3]
+
+    numeric_stats: Dict[str, Dict[str, Any]] = {}
+    for col in column_names:
+        values = [r.get(col) for r in records]
+        nums = [v for v in values if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        if not nums:
+            continue
+        numeric_stats[col] = {
+            "count": len(nums),
+            "min": min(nums),
+            "max": max(nums),
+            "sum": sum(nums),
+            "avg": sum(nums) / len(nums),
+        }
+
+    return {
+        "row_count": total_rows,
+        "columns": column_names,
+        "dtypes": dtypes,
+        "sample": sample,
+        "numeric_stats": numeric_stats,
+    }
 
 
 @mcp.tool()
