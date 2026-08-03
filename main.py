@@ -23,6 +23,8 @@ from fastapi.responses import HTMLResponse
 from mcp.server.fastmcp import FastMCP, Context
 from dotenv import load_dotenv
 import json
+import csv
+import io
 import logging
 
 logging.basicConfig(
@@ -1383,7 +1385,7 @@ async def superset_sqllab_execute_query(
     database_id: int,
     sql: str,
     max_rows: int = 100,
-    format: str = "rows",
+    format: str = "csv",
     include_metadata: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -1400,8 +1402,11 @@ async def superset_sqllab_execute_query(
             value or 0 for no limit. The response always reports `total_rows`
             and `truncated`.
         format: Output shape for the data payload:
-            - "rows" (default): {columns: [...], data: [[...], [...]]} — most compact
-            - "records": [{col: val, ...}] — backward-compatible verbose shape
+            - "csv" (default): CSV string (header + rows) — fewest tokens per value,
+              no repeated quotes/brackets. Values lose native typing (all strings).
+            - "json": {columns: [...], data: [[...], [...]]} — compact JSON,
+              preserves native types (int/float/bool/null)
+            - "records": [{col: val, ...}] — backward-compatible verbose JSON shape
             - "columnar": {col: [v1, v2, ...]} — efficient for wide numeric data
             - "summary": only {row_count, columns, dtypes, sample (3 rows),
               numeric_stats {min,max,sum,avg,count}} — for sanity-checking large results
@@ -1475,13 +1480,25 @@ def _format_sqllab_result(
         result["data"] = {
             col: [r.get(col) for r in records] for col in column_names
         }
-    else:  # "rows" — default, most compact
+    elif format == "json":
         result["data"] = [[r.get(col) for col in column_names] for r in records]
+    else:  # "csv" — default, fewest tokens per value
+        result["data"] = _build_csv(records, column_names)
 
     if include_metadata:
         result["metadata"] = raw.get("query")
 
     return result
+
+
+def _build_csv(records: List[Dict[str, Any]], column_names: List[str]) -> str:
+    """Render rows as a CSV string (header + data), minimal quoting."""
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(column_names)
+    for r in records:
+        writer.writerow(["" if r.get(col) is None else r.get(col) for col in column_names])
+    return buffer.getvalue()
 
 
 def _build_summary(
@@ -1562,22 +1579,48 @@ async def superset_sqllab_format_sql(ctx: Context, sql: str) -> Dict[str, Any]:
 @mcp.tool()
 @requires_auth
 @handle_api_errors
-async def superset_sqllab_get_results(ctx: Context, key: str) -> Dict[str, Any]:
+async def superset_sqllab_get_results(
+    ctx: Context,
+    key: str,
+    max_rows: int = 100,
+    format: str = "csv",
+    include_metadata: bool = False,
+) -> Dict[str, Any]:
     """
-    Get results of a previously executed SQL query
+    Get results of a previously executed SQL query, with token-efficient output.
 
     Makes a request to the /api/v1/sqllab/results/ endpoint to retrieve results
     for an asynchronous query using its result key.
 
     Args:
         key: Result key to retrieve
+        max_rows: Truncate result to this many rows (default 100). Use a higher
+            value or 0 for no limit. The response always reports `total_rows`
+            and `truncated`.
+        format: Output shape for the data payload:
+            - "csv" (default): CSV string (header + rows) — fewest tokens per value,
+              no repeated quotes/brackets. Values lose native typing (all strings).
+            - "json": {columns: [...], data: [[...], [...]]} — compact JSON,
+              preserves native types (int/float/bool/null)
+            - "records": [{col: val, ...}] — backward-compatible verbose JSON shape
+            - "columnar": {col: [v1, v2, ...]} — efficient for wide numeric data
+            - "summary": only {row_count, columns, dtypes, sample (3 rows),
+              numeric_stats {min,max,sum,avg,count}} — for sanity-checking large results
+        include_metadata: When True, includes the original Superset `query`
+            metadata block (timestamps, user, etc.). Default False to save tokens.
 
     Returns:
-        A dictionary with query results including column information and data rows
+        Compact dict with: status, query_id, columns, total_rows, truncated,
+        and either `data` (formats rows/records/columnar) or `summary`.
     """
-    return await make_api_request(
+    raw = await make_api_request(
         ctx, "get", f"/api/v1/sqllab/results/", params={"key": key}
     )
+
+    if not isinstance(raw, dict) or "data" not in raw:
+        return raw
+
+    return _format_sqllab_result(raw, max_rows, format, include_metadata)
 
 
 @mcp.tool()
